@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 class EmbedNet(nn.Module):
 
-    def __init__(self, model, optimizer, trainfunc, nPerClass, **kwargs):
+    def __init__(self, model, optimizer, trainfunc, nPerClass, vgg=False, **kwargs):
         super(EmbedNet, self).__init__();
 
         ## __S__ is the embedding model
@@ -77,7 +77,7 @@ class ModelTrainer(object):
         with tqdm(loader, unit="batch") as tepoch:
         
             for data, label in tepoch:
-
+                
                 tepoch.total = tepoch.__len__()
 
                 data    = data.transpose(1,0)
@@ -96,7 +96,6 @@ class ModelTrainer(object):
                     nloss = self.__model__(data.cuda(), label.cuda())
                     nloss.backward();
                     self.__optimizer__.step();
-
                 loss    += nloss.detach().cpu().item();
                 counter += 1;
                 index   += stepsize;
@@ -200,4 +199,42 @@ class ModelTrainer(object):
                 continue;
 
             self_state[name].copy_(param);
+            
+    ## ===== ===== ===== ===== ===== ===== ===== =====
+    ## Change only last fc_layer
+    ## ===== ===== ===== ===== ===== ===== ===== ===== 
+    
+    def fine_tuning(self, path):
+        # should append (2000, 512)
+        self_state = self.__model__.state_dict();
+        loaded_state = torch.load(path);
+        length = len(loaded_state_.keys())
+        for idx, items in loaded_state.items():
+            name = items[0]
+            param = items[1]
+            origname = name;
+            if idx != length-1 and idx != length-2:
+                if name not in self_state:
+                    if name not in self_state:
+                        print("{} is not in the model.".format(origname));
+                        continue;
 
+                if self_state[name].size() != loaded_state[origname].size():
+                    print("Wrong parameter length: {}, model: {}, loaded: {}".format(origname, self_state[name].size(), loaded_state[origname].size()));
+                    continue;
+                self_state[name].copy_(param);
+                
+            elif idx == length-2:
+                new_parameter = torch.nn.Parameter(torch.randn(2000, 512), requires_grad=True)
+                # Xavier initialization
+                nn.init.xavier_normal_(new_parameter, gain=1)
+                self_state[name].copy_(new_parameter);
+            else:
+                new_parameter = torch.nn.Parameter(torch.randn(2000), requires_grad=True)
+                # Xavier initialization
+                nn.init.xavier_normal_(new_parameter, gain=1)
+                self_state[name].copy_(new_parameter);
+            
+        
+            
+        

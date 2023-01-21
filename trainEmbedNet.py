@@ -26,8 +26,9 @@ parser.add_argument('--nDataLoaderThread',  type=int, default=5, 	help='Number o
 
 ## Training details
 parser.add_argument('--test_interval',  type=int,   default=5,      help='Test and save every [test_interval] epochs');
-parser.add_argument('--max_epoch',      type=int,   default=100,    help='Maximum number of epochs');
+parser.add_argument('--max_epoch',      type=int,   default=50,    help='Maximum number of epochs');
 parser.add_argument('--trainfunc',      type=str,   default="softmax",  help='Loss function');
+parser.add_argument('--vgg',            type=bool,  default=False, help='Whether using vgg or not')
 
 ## Optimizer
 parser.add_argument('--optimizer',      type=str,   default="adam", help='sgd or adam');
@@ -47,7 +48,10 @@ parser.add_argument('--initial_model',  type=str,   default="",     help='Initia
 parser.add_argument('--save_path',      type=str,   default="exps/exp1", help='Path for model and logs');
 
 ## Training and evaluation data
-parser.add_argument('--train_path',     type=str,   default="data/train",   help='Absolute path to the train set');
+# for ee488b data
+#parser.add_argument('--train_path',     type=str,   default="data/train",   help='Absolute path to the train set');
+# for vgg data
+parser.add_argument('--train_path',     type=str,   default="data/vgg1",   help='Absolute path to the train set');
 parser.add_argument('--train_ext',      type=str,   default="jpg",  help='Training files extension');
 parser.add_argument('--test_path',      type=str,   default="data/val",     help='Absolute path to the test set');
 parser.add_argument('--test_list',      type=str,   default="data/val_pairs.csv",   help='Evaluation list');
@@ -64,16 +68,27 @@ parser.add_argument('--output',         type=str,   default="",     help='Save a
 parser.add_argument('--mixedprec',      dest='mixedprec',   action='store_true', help='Enable mixed precision training')
 parser.add_argument('--gpu',            type=int,   default=9,      help='GPU index');
 
+## Fine-tuning
+parser.add_argument('--fine-tune',      type=bool,   default=False,      help='Fine tuning');
+
 args = parser.parse_args();
 
+'''
+print(vars(args))
+{'batch_size': 200, 'max_img_per_cls': 500, 'nDataLoaderThread': 5, 'test_interval': 5, 'max_epoch': 50, 'trainfunc': 'amsoftmax', 
+'optimizer': 'adam', 'scheduler': 'steplr', 'lr': 0.001, 'lr_decay': 0.9, 'weight_decay': 0, 'margin': 0.1, 'scale': 30, 'nPerClass': 1, 
+'nClasses': 2000, 'initial_model': '', 'save_path': 'exps/exp1', 'train_path': 'data/train', 'train_ext': 'jpg', 'test_path': 'data/val', 
+'test_list': 'data/val_pairs.csv', 'model': 'ResNet18', 'nOut': 512, 'eval': False, 'output': '', 'mixedprec': False, 'gpu': 0}
+'''
 
 # ## ===== ===== ===== ===== ===== ===== ===== =====
 # ## Trainer script
 # ## ===== ===== ===== ===== ===== ===== ===== =====
-
+## Change
 def main_worker(args):
 
     ## Load models
+    # **vars
     s = EmbedNet(**vars(args)).cuda();
 
     it          = 1
@@ -94,20 +109,26 @@ def main_worker(args):
 
     ## Initialise trainer and data loader
     trainLoader = get_data_loader(transform=train_transform, **vars(args));
+
     trainer     = ModelTrainer(s, **vars(args))
 
     ## Load model weights
     modelfiles = glob.glob('{}/model0*.model'.format(args.save_path))
     modelfiles.sort()
 
-    ## If the target directory already exists, start from the existing file
-    if len(modelfiles) >= 1:
-        trainer.loadParameters(modelfiles[-1]);
-        print("Model {} loaded from previous state!".format(modelfiles[-1]));
-        it = int(os.path.splitext(os.path.basename(modelfiles[-1]))[0][5:]) + 1
+    ## Fine tuning
+    if args.fine_tune:
+        trainer.fine_tuning(args.initial_model);
+        print("Model {} loaded!".format(args.initial_model));
+    ## If initial_model exists, start from that file
     elif(args.initial_model != ""):
         trainer.loadParameters(args.initial_model);
         print("Model {} loaded!".format(args.initial_model));
+    ## If the target directory already exists, start from the existing file
+    elif len(modelfiles) >= 1:
+        trainer.loadParameters(modelfiles[-1]);
+        print("Model {} loaded from previous state!".format(modelfiles[-1]));
+        it = int(os.path.splitext(os.path.basename(modelfiles[-1]))[0][5:]) + 1
 
     ## If the current iteration is not 1, update the scheduler
     for ii in range(1,it):
@@ -140,29 +161,47 @@ def main_worker(args):
     scorefile.write('{}\n{}\n'.format(strtime,args))
     scorefile.flush()
 
-    ## Core training script
-    for it in range(it,args.max_epoch+1):
+    ## vgg training script
+    if args.vgg == True:
+        for it in range(1, args.max_epoch+1):
 
-        clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
+            clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
 
-        print(time.strftime("%Y-%m-%d %H:%M:%S"), it, "Training epoch {:d} with LR {:.5f} ".format(it,max(clr)));
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), it, "Training epoch {:d} with LR {:.5f} ".format(it,max(clr)));
 
-        loss = trainer.train_network(trainLoader);
-
-        if it % args.test_interval == 0:
-            
-            sc, lab, trials = trainer.evaluateFromList(transform=test_transform, **vars(args))
-            result = tuneThresholdfromScore(sc, lab, [1, 0.1]);
-
-            print("IT {:d}, Val EER {:.5f}".format(it, result[1]));
-            scorefile.write("IT {:d}, Val EER {:.5f}\n".format(it, result[1]));
+            loss = trainer.train_network(trainLoader);
 
             trainer.saveParameters(args.save_path+"/model{:09d}.model".format(it));
 
-        print(time.strftime("%Y-%m-%d %H:%M:%S"), "TLOSS {:.5f}".format(loss));
-        scorefile.write("IT {:d}, TLOSS {:.5f}\n".format(it, loss));
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), "TLOSS {:.5f}".format(loss));
+            scorefile.write("IT {:d}, TLOSS {:.5f}\n".format(it, loss));
 
-        scorefile.flush()
+            scorefile.flush()
+        
+    ## Core training script(ee488b data)
+    else:
+        for it in range(1, args.max_epoch+1):
+
+            clr = [x['lr'] for x in trainer.__optimizer__.param_groups]
+
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), it, "Training epoch {:d} with LR {:.5f} ".format(it,max(clr)));
+
+            loss = trainer.train_network(trainLoader);
+
+            if it % args.test_interval == 0:
+            
+                sc, lab, trials = trainer.evaluateFromList(transform=test_transform, **vars(args))
+                result = tuneThresholdfromScore(sc, lab, [1, 0.1]);
+
+                print("IT {:d}, Val EER {:.5f}".format(it, result[1]));
+                scorefile.write("IT {:d}, Val EER {:.5f}\n".format(it, result[1]));
+
+                trainer.saveParameters(args.save_path+"/model{:09d}.model".format(it));
+
+            print(time.strftime("%Y-%m-%d %H:%M:%S"), "TLOSS {:.5f}".format(loss));
+            scorefile.write("IT {:d}, TLOSS {:.5f}\n".format(it, loss));
+
+            scorefile.flush()
 
     scorefile.close();
 
